@@ -1,0 +1,579 @@
+from ncontext import *
+import numpy as np
+import gpytoolbox as gpy
+import polyscope as ps
+import polyscope.imgui as psim
+import math
+
+# Colors
+RED = [1.0, 0.0, 0.0]
+LIGHTRED = [1.0, 0.745, 0.773]
+GREEN = [0.0, 1.0, 0.0]
+BLUE = [0.0, 0.0, 1.0]
+LIGHTBLUE = [0.698, 0.698, 1.0]
+YELLOW = [1.0, 1.0, 0.0]
+CYAN = [0.0, 1.0, 1.0]
+MAGENTA = [1.0, 0.0, 1.0]
+BLACK = [0.0, 0.0, 0.0]
+ORANGE = [1.0, 0.5, 0.0]
+PURPLE = [0.5, 0.0, 0.5]
+
+sphere_group_prefix = "SDF Sphere"
+
+def toggle_spheres_visibility(show):
+    for i in range(len(spheres)):
+        name = f"{sphere_group_prefix} {i}: radius = {np.abs(spheres[i][2])}"
+        if ps.has_point_cloud(name):
+            ps.get_point_cloud(name).set_enabled(show)
+
+def spheres_tangent(center1, radius1, center2, radius2, epsilon=1e-9):
+    distance = math.sqrt(math.pow(center1[0]-center2[0], 2) + math.pow(center1[1]-center2[1], 2))
+    if abs(distance - (radius1 + radius2)) < epsilon:
+        return True, "externally tangent"
+    elif abs(distance - abs(radius1 - radius2)) < epsilon:
+        return True, "internally tangent"
+    else:
+        return False, None
+
+def check_spheres():
+    global spheres
+    global num_spheres, num_tangent_pairs, num_overlap_pairs, num_in_out_tangent_pairs, num_contained_spheres
+
+    num_spheres = len(spheres)
+    is_contained = [False for _ in range(num_spheres)]
+    num_tangent_pairs = 0
+    num_overlap_pairs = 0
+    num_in_out_tangent_pairs = 0
+
+    for i, (centeri, _, si) in enumerate(spheres):
+        for j, (centerj, _, sj) in enumerate(spheres):
+            if j >= i:
+                break
+            tangent, msg = spheres_tangent(centeri, abs(si), centerj, abs(sj))
+            if tangent == True:
+                num_tangent_pairs += 1
+                if msg == "internally tangent":
+                    if abs(si) < abs(sj):
+                        is_contained[i] = True
+                    else:
+                        is_contained[j] = True
+                    num_overlap_pairs += 1
+                elif si * sj < 0:
+                    num_in_out_tangent_pairs = 1
+    
+    num_contained_spheres = sum(is_contained)
+
+def set_current_box():
+    global bbox_min_x, bbox_max_x, bbox_min_y, bbox_max_y
+    global cur_bbox_min_x, cur_bbox_max_x, cur_bbox_min_y, cur_bbox_max_y
+    global box_x_dis, box_y_dis
+    global cur_per
+
+    cur_bbox_min_x = bbox_min_x - box_x_dis * cur_per
+    cur_bbox_max_x = bbox_max_x + box_x_dis * cur_per
+    cur_bbox_min_y = bbox_min_y - box_y_dis * cur_per
+    cur_bbox_max_y = bbox_max_y + box_y_dis * cur_per
+
+def ground_truth_polygon_from_png(filepath):
+    global V_gt, F_gt
+    global bbox_min_x, bbox_max_x, bbox_min_y, bbox_max_y
+    global box_x_dis, box_y_dis
+
+    poly_list = gpy.png2poly(filepath)
+    # Downsample polygon 
+    V_gt = None
+    F_gt = None
+    for poly in poly_list:
+        nv = 0 if V_gt is None else V_gt.shape[0]
+        pV = poly[::5,:]
+        V_gt = pV if V_gt is None else np.concatenate((V_gt, pV), axis=0)
+        F_gt = gpy.edge_indices(pV.shape[0],closed=True) if F_gt is None else \
+            np.concatenate((F_gt, nv+gpy.edge_indices(pV.shape[0],closed=True)),
+                axis=0)
+    V_gt = gpy.normalize_points(V_gt)
+    # Randomly rotate the polygon
+    rng_seed = 3523
+    np.random.seed(rng_seed)
+    angle = np.random.rand() * 2 * np.pi
+    R = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+    V_gt = V_gt @ R
+
+    # Bounding box for SDF
+    bbox_min_x = np.min(V_gt[:, 0])
+    bbox_max_x = np.max(V_gt[:, 0])
+    bbox_min_y = np.min(V_gt[:, 1])
+    bbox_max_y = np.max(V_gt[:, 1])
+    box_x_dis = bbox_max_x - bbox_min_x
+    box_y_dis = bbox_max_y - bbox_min_y
+    set_current_box()
+
+def create_sdf():
+    global n, sdf
+    global min_filter_radius, max_filter_radius
+    global min_radius, max_radius
+    global U_ori, S_ori, spheres
+    global cur_bbox_min_x, cur_bbox_max_x, cur_bbox_min_y, cur_bbox_max_y
+
+    # Set up a grid
+    # gx, gy = np.meshgrid(np.linspace(-1.0, 1.0, n + 1), np.linspace(-1.0, 1.0, n + 1))
+    gx, gy = np.meshgrid(np.linspace(cur_bbox_min_x, cur_bbox_max_x, n + 1), np.linspace(cur_bbox_min_y, cur_bbox_max_y, n + 1))
+    U_ori = np.vstack((gx.flatten(), gy.flatten())).T
+    S_ori = sdf(U_ori)
+
+    # SDF as spheres 
+    spheres = []
+    for i, (p, s) in enumerate(zip(U_ori, S_ori)):
+        radius = np.abs(s)
+        center = p
+        # Sampled sphere points
+        theta = np.linspace(0, 2 * np.pi, 10 * int(radius/min(np.abs(S_ori))))
+        sphere_points = np.array([center + radius * np.array([np.cos(t), np.sin(t)]) for t in theta])
+        sphere = (center, sphere_points, s)
+        spheres.append(sphere)
+    
+    out_S = S_ori[S_ori>0] 
+    min_radius = np.min(out_S)
+    max_radius = np.max(out_S)
+    min_filter_radius = min_radius
+    max_filter_radius = max_radius
+
+def create_filtered_sdf():
+    global U_f, S_f
+    valid_indices = np.where(
+        ((S_ori > 0) & (S_ori >= min_filter_radius) & (S_ori <= max_filter_radius)) | (S_ori < 0)
+    )
+    U_f = U_ori[valid_indices]
+    S_f = S_ori[valid_indices]
+
+def create_power_diagram():
+    global V_pd, E_pd, Es_pd, Ec_pd
+    global U_f, S_f
+
+    V_pd, E_pd, Es_pd = nrfta.power_diagram(U_f, S_f)
+
+    Ec_pd = np.zeros((Es_pd.shape[0], 3))
+
+    for i in range(Es_pd.shape[0]):
+        if Es_pd[i]:
+            Ec_pd[i] = BLACK 
+        else:
+            Ec_pd[i] = GREEN
+
+def visualize():
+    global min_filter_radius, max_filter_radius
+    global U_ori, sphere, V_gt, F_gt, V_rfta, F_rfta, P_pos, Pf, Pf_pos, Pf_neg, N, N_pos, N_neg
+    global current_step, fine_tune_current_iter
+    global V_pd, E_pd, Ec_pd
+
+    ps.remove_all_structures()
+    ps.register_curve_network("Ground Truth (Rotated)", V_gt, F_gt, radius=0.001, color=CYAN)
+    ps.register_point_cloud(f"Grid Points", U_ori, radius=0.003, color=YELLOW)
+
+    if current_step == 0:
+        for i, (_, points, s) in enumerate(spheres):
+            radius = np.abs(s)
+            if s > 0 and (radius < min_filter_radius or radius > max_filter_radius):
+                continue
+            scolor = RED if s > 0 else BLUE
+            ps.register_point_cloud(f"{sphere_group_prefix} {i}: radius = {radius}", points, radius=0.0005, color=scolor)
+        pd = ps.register_curve_network("Power Diagram", V_pd, E_pd, radius=0.001)
+        pd.add_color_quantity("Color of PD Edge", Ec_pd, defined_on='edges',enabled=True)
+    if current_step == 1:
+        if not (P_pos is None or P_pos.size==0):
+            ps.register_point_cloud("(Positive) Sampled Points", scale*P_pos + trans[None,:], radius=0.003, color=LIGHTRED)
+            ps_pf_pos = ps.register_point_cloud("(Positive) Feasible Points", scale*Pf_pos + trans[None,:], radius=0.003, color=RED)
+            ps_pf_pos.add_vector_quantity("(Positive) Normals of Feasible Points", N_pos/math.pow(scale, 3), enabled=True, vectortype='ambient', color=ORANGE)
+        if not (P_neg is None or P_neg.size==0):
+            ps.register_point_cloud("(Inner) Sampled Points", scale*P_neg + trans[None,:], radius=0.003, color=LIGHTBLUE)
+            ps_pf_neg = ps.register_point_cloud("(Inner) Feasible Points", scale*Pf_neg + trans[None,:], radius=0.003, color=BLUE)
+            ps_pf_neg.add_vector_quantity("(Inner) Normals of Feasible Points", N_neg /math.pow(scale, 3), enabled=True, vectortype='ambient', color=PURPLE)
+    if current_step == 2:
+        ps.register_curve_network("Current Reconstruction", scale*V_rfta[fine_tune_current_iter-1] + trans[None,:], F_rfta[fine_tune_current_iter-1], radius=0.002, color=BLACK)
+        ps_pf = ps.register_point_cloud("Feasible Points", scale*Pf[fine_tune_current_iter-1] + trans[None,:], radius=0.003, color=PURPLE)
+        ps_pf.add_vector_quantity("Normals of Feasible Points", N[fine_tune_current_iter-1]/math.pow(scale, 3), enabled=True, vectortype='ambient', color=MAGENTA)
+    if current_step == 3:
+        ps.register_curve_network("Reconstruction", scale*V_rfta[fine_tune_current_iter] + trans[None,:], F_rfta[fine_tune_current_iter], radius=0.002, color=BLACK)
+
+def step_forward(tol=1e-4):
+    global current_step, total_step, fine_tune_current_iter
+    global U_ori, S_ori, U, S, P, V_gt, F_gt, V_rfta, F_rfta, P, P_pos, P_neg, Pf, Pf_pos, Pf_neg, N, N_pos, N_neg, f, f_pos, f_neg
+    global fine_tune_iters, batch_size, num_rasterization_spheres, screening_weight, rasterization_resolution, max_points_per_sphere
+    global n_local_searches, local_search_iters, local_search_t
+    global parallel, rng, seed, n_sdf, trans, scale 
+
+    if current_step == 0:
+        rng_seed = 3452
+        d = U_ori.shape[1]
+        assert d==2 or d==3, "Only dimensions 2 and 3 supported."
+        assert max_points_per_sphere>=1, "There has to be at least one point per sphere."
+
+        n_sdf = U_ori.shape[0]
+
+        # Pick default values if not supplied.
+        if n_local_searches is None:
+            n_local_searches = math.ceil(2. * n_sdf**(1./d))
+
+        # RNG used to compute random numbers and new seeds during the method.
+        rng = np.random.default_rng(seed=rng_seed)
+        seed = lambda : rng.integers(0,np.iinfo(np.int32).max)
+
+        # Resize the SDF points in U and the SDF samples in S so it's in [0,1]^d
+        trans = np.min(U_ori, axis=0)
+        U = U_ori - trans[None,:]
+        scale = np.max(U)
+        U /= scale
+        S = S_ori/scale
+
+    if current_step == total_step-1:
+        return
+    if current_step != 2:
+        if current_step == 1:
+            fine_tune_current_iter = 0
+        current_step = (current_step + 1) % total_step
+    if current_step == total_step:
+        return
+    elif fine_tune_current_iter == fine_tune_iters:
+        current_step = (current_step + 1) % total_step
+ 
+    if current_step == 1:
+        # Pick default values if not supplied.
+        if rasterization_resolution is None:
+            rasterization_resolution = 64 * math.ceil(n_sdf**(1./d)/16.)
+
+        # Split the SDF into positive and negative spheres
+        neg = S<0
+        pos = np.logical_not(neg)
+        pos,neg = np.nonzero(pos)[0], np.nonzero(neg)[0]
+        U_pos, U_neg = U[pos,:], U[neg,:]
+        S_pos, S_neg = S[pos], S[neg]
+        if pos.size > 0:
+            P_pos,N_pos,f_pos,Pf_pos = nrfta.sdf_to_point_cloud(U_pos, S_pos,
+                rng_seed=seed(),
+                rasterization_resolution=rasterization_resolution,
+                n_local_searches=n_local_searches,
+                local_search_iters=local_search_iters,
+                batch_size=batch_size,
+                num_rasterization_spheres=num_rasterization_spheres,
+                tol=tol, 
+                parallel=parallel)
+        else:
+            P_pos,N_pos,f_pos,Pf_pos = None,None,None,None
+        if neg.size>0:
+            P_neg,N_neg,f_neg,Pf_neg = nrfta.sdf_to_point_cloud(U_neg, S_neg,
+                rng_seed=seed(),
+                rasterization_resolution=rasterization_resolution,
+                n_local_searches=n_local_searches,
+                local_search_iters=local_search_iters,
+                batch_size=batch_size,
+                num_rasterization_spheres=num_rasterization_spheres,
+                tol=tol,
+                parallel=parallel)
+        else:
+            P_neg,N_neg,f_neg,Pf_neg = None,None,None,None
+
+        P0 = None
+        N0 = None
+        f0 = None
+        Pf0 = None
+        P = [None for _ in range(fine_tune_iters+1)]
+        N = [None for _ in range(fine_tune_iters+1)]
+        f = [None for _ in range(fine_tune_iters+1)]
+        Pf = [None for _ in range(fine_tune_iters+1)]
+        V_rfta = [None for _ in range(fine_tune_iters+1)]
+        F_rfta = [None for _ in range(fine_tune_iters+1)]
+
+        if P_pos is None or P_pos.size==0:
+            P0,N0,f0,Pf0 = P_neg,N_neg,neg[f_neg],Pf_neg
+        elif P_neg is None or P_neg.size==0:
+            P0,N0,f0,Pf0 = P_pos,N_pos,pos[f_pos],Pf_pos
+        else:
+            P0 = np.concatenate((P_pos, P_neg), axis=0)
+            N0 = np.concatenate((N_pos, N_neg), axis=0)
+            f0 = np.concatenate((pos[f_pos], neg[f_neg]), axis=0)
+            Pf0 = np.concatenate((Pf_pos, Pf_neg), axis=0)
+
+        if Pf0 is None or Pf0.size==0:
+            ps.warning("Warning: No feasible points found!") 
+            reset()
+            return
+        
+        P[0] = P0
+        N[0] = N0
+        f[0] = f0
+        Pf[0] = Pf0
+
+    if current_step == 2:
+        # One Iter
+        ## Generate a random batch of size batch size.
+        if batch_size > 0 and batch_size < n_sdf:
+            batch = rng.choice(n_sdf, batch_size)
+        else:
+            batch = np.arange(n_sdf)
+            rng.shuffle(batch)
+
+        V_rfta[fine_tune_current_iter], F_rfta[fine_tune_current_iter] = nrfta.point_cloud_to_mesh(Pf[fine_tune_current_iter], N[fine_tune_current_iter],
+            screening_weight=screening_weight,
+            outer_boundary_type="Neumann",
+            parallel=False)
+
+        if V_rfta[fine_tune_current_iter].size == 0:
+            ps.warning("Warning: No mesh generated!") 
+            reset()
+            return
+
+        Pf[fine_tune_current_iter+1], N[fine_tune_current_iter+1], f[fine_tune_current_iter+1] = nrfta.fine_tune_point_cloud_iteration(U,
+            S,
+            V_rfta[fine_tune_current_iter],
+            F_rfta[fine_tune_current_iter],
+            Pf[fine_tune_current_iter],
+            N[fine_tune_current_iter],
+            f[fine_tune_current_iter],
+            batch,
+            max_points_per_sphere,
+            seed(),
+            n_local_searches,
+            local_search_iters,
+            local_search_t,
+            tol, parallel)
+ 
+        fine_tune_current_iter += 1
+ 
+    if current_step == 3:
+        V_rfta[fine_tune_current_iter],F_rfta[fine_tune_current_iter] = nrfta.point_cloud_to_mesh(Pf[fine_tune_current_iter], N[fine_tune_current_iter],
+            screening_weight=screening_weight,
+            outer_boundary_type="Neumann",
+            parallel=False) # disabled parallelization here because it ocassionally crashes (Misha's version)
+
+        if V_rfta[fine_tune_current_iter] is None or V_rfta[fine_tune_current_iter].size==0:
+            ps.warning("Warning: No mesh generated!") 
+            reset()
+
+def reset():
+    global current_step, fine_tune_current_iter
+    current_step = 0 
+    fine_tune_current_iter = -1
+
+def change_list_size(lst, new_size):
+    if lst == None:
+        return
+    current_size = len(lst)
+    if new_size > current_size:
+        lst.extend([None] * (new_size - current_size))
+    elif new_size < current_size:
+        del lst[new_size:]
+
+def callback():
+    global png_files_selected, png_selected_index, n, min_filter_radius, max_filter_radius, cur_per, show_spheres
+    global V_gt, F_gt, sdf, spheres, min_radius, max_radius
+    global num_spheres, num_tangent_pairs, num_overlap_pairs, num_in_out_tangent_pairs, num_contained_spheres
+    global current_step, step_names, fine_tune_current_iter, fine_tune_iters
+    
+    psim.PushItemWidth(300)
+
+    if psim.Button("Reset"):
+        reset()
+        visualize()
+    if psim.Button("Last Step"):
+        if current_step > 0:
+            if current_step == 3:
+                fine_tune_current_iter = fine_tune_iters
+            if current_step == 2:
+                if fine_tune_current_iter == 1:
+                    current_step -= 1
+                else:
+                    fine_tune_current_iter -= 1
+            else:
+                current_step -= 1
+        if current_step == 0:
+            reset()
+        visualize()
+    psim.SameLine()
+    if psim.Button("Next Step"):
+        step_forward()
+        visualize()
+    psim.SameLine()
+    psim.TextUnformatted(f"{step_names[current_step]}")
+    if current_step == 2:
+        psim.SameLine()
+        psim.TextUnformatted(f": Iter {fine_tune_current_iter}")
+    
+    psim.Separator()
+    num_widges = 6
+    changed = [False for _ in range(num_widges)]
+
+    changed[0] = psim.BeginCombo("Input Shape", png_files_selected)
+    if changed[0]:
+        for i, val in enumerate(png_files):
+            _, selected = psim.Selectable(val, png_files_selected==val)
+            if selected:
+                png_files_selected = val
+                png_selected_index = i
+        psim.EndCombo()
+        ground_truth_polygon_from_png(png_paths[png_selected_index])
+        # Create and abstract SDF function that is the only connection to the shape
+        sdf = lambda x: gpy.signed_distance(x, V_gt, F_gt)[0]
+
+    changed[1], n = psim.SliderInt("Grid Resolution", n, v_min=5, v_max=50)
+
+    psim.TextUnformatted("Exclude Outer Spheres with Radius: ")
+    psim.PushItemWidth(150)
+    changed[2], min_filter_radius = psim.SliderFloat("below", min_filter_radius, v_min=min_radius, v_max=max_radius) 
+    psim.SameLine()
+    changed[3], max_filter_radius = psim.SliderFloat("above", max_filter_radius, v_min=min_filter_radius, v_max=max_radius)
+    psim.PopItemWidth()
+
+    if changed[2] or changed[3]:
+        create_filtered_sdf()
+        create_power_diagram()
+
+    changed[4], fine_tune_iters = psim.SliderInt("Fine-Tune Iterations", fine_tune_iters, v_min=max(1, fine_tune_current_iter), v_max=50)
+    if changed[4]:
+        change_list_size(P, fine_tune_iters+1)
+        change_list_size(N, fine_tune_iters+1)
+        change_list_size(f, fine_tune_iters+1)
+        change_list_size(Pf, fine_tune_iters+1)
+        change_list_size(V_rfta, fine_tune_iters+1)
+        change_list_size(F_rfta, fine_tune_iters+1)
+    
+    changed[5], cur_per = psim.SliderFloat("SDF Enlarged Percentage", cur_per, v_min=min_per, v_max=max_per)
+    if changed[5]:
+        set_current_box()
+
+    if changed[0] or changed[1] or changed[5]:
+        create_sdf()
+        create_filtered_sdf()
+        create_power_diagram()
+        # check_spheres()
+        reset()
+    
+    if any(changed):
+        visualize()
+
+    if psim.Button("Show Spheres"):
+        show_spheres = True
+    psim.SameLine()
+    if psim.Button("Hide Spheres"):
+        show_spheres = False 
+    toggle_spheres_visibility(show_spheres)
+
+    psim.Separator()
+    psim.TextUnformatted(f"#Spheres: {num_spheres}")
+    psim.TextUnformatted(f"#Tangent Pairs: {num_tangent_pairs}")
+    psim.TextUnformatted(f"#Overlapped Pairs: {num_overlap_pairs}")
+    psim.TextUnformatted(f"#Inside-Outside Tangent Pairs: {num_in_out_tangent_pairs}")
+    psim.TextUnformatted(f"#Spheres Contained in Other Spheres: {num_contained_spheres}")
+
+    psim.PopItemWidth()
+
+# Parameters 
+## Selectable input shapes
+png_selected_index = 0 
+data_dir = 'data/'
+all_files = os.listdir(data_dir)
+### Used for options
+png_files = [file for file in all_files if file.lower().endswith('.png')]
+png_files_selected = png_files[png_selected_index]
+### Used for locate
+png_paths = []
+for png_file in png_files:
+    png_paths.append(os.path.join(data_dir, png_file))
+## Show spheres
+show_spheres = True
+## Grid resolution: nxn
+n = 10
+## Bounding box size for SDF
+### Fit
+bbox_min_x = -1.0 
+bbox_max_x = 1.0 
+bbox_min_y = -1.0 
+bbox_max_y = 1.0 
+### Current
+cur_bbox_min_x = -1.0 
+cur_bbox_max_x = 1.0 
+cur_bbox_min_y = -1.0 
+cur_bbox_max_y = 1.0 
+### Fit box size
+box_x_dis = 2.0 
+box_y_dis = 2.0 
+### Percentage for controlling
+min_per = 0.005
+max_per = 1.0
+cur_per = 0.3
+## Filter outer spheres by radius
+min_radius = 0
+max_radius = 0
+min_filter_radius = 0
+max_filter_radius = 0
+## Customized Statistics
+num_spheres = 0
+num_tangent_pairs = 0
+num_overlap_pairs = 0
+num_in_out_tangent_pairs = 0
+num_contained_spheres = 0
+## Algorithm (rfta)
+current_step = 0
+total_step = 4
+step_names = ["Visualize SDF", "Intialize Feasible Points", "Fine-Tune Point Cloud", "Point Cloud to Mesh"]
+fine_tune_current_iter = -1 
+fine_tune_iters = 10
+batch_size = 10000
+num_rasterization_spheres = 0
+screening_weight = 10.
+rasterization_resolution = None
+max_points_per_sphere = 3
+n_local_searches = None
+local_search_iters = 20
+local_search_t = 0.01
+parallel = False
+### Saved states
+V_gt = None
+F_gt = None
+V_rfta = None
+F_rfta = None
+U = None
+U_ori = None
+S = None
+S_ori = None
+spheres = None
+P = None
+P_pos = None
+P_neg = None
+Pf = None
+Pf_pos = None
+Pf_neg = None
+N = None
+N_pos = None
+N_neg = None
+f = None
+f_pos = None
+f_neg = None
+rng = None 
+seed = None
+n_sdf = 0
+trans = None
+scale = None 
+#### Power diagram
+U_f = None
+S_f = None
+V_pd = None
+E_pd = None
+Es_pd = None
+Ec_pd = None
+        
+# Setup 2D polyscope
+ps.init()
+ps.set_navigation_style("planar")
+
+# Default configuration 
+ground_truth_polygon_from_png(png_paths[png_selected_index])
+# Create and abstract SDF function that is the only connection to the shape
+sdf = lambda x: gpy.signed_distance(x, V_gt, F_gt)[0]
+create_sdf()
+create_filtered_sdf()
+create_power_diagram()
+# check_spheres()
+visualize()
+
+ps.set_user_callback(callback)
+
+ps.show()

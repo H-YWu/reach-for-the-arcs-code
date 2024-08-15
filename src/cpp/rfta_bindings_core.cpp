@@ -15,6 +15,7 @@ void binding_outside_points_from_rejection_sampling(py::module& m);
 void binding_locally_make_feasible(py::module& m);
 void binding_fine_tune_point_cloud_iter(py::module& m);
 void binding_point_cloud_to_mesh(py::module& m);
+void binding_power_diagram(py::module& m);
 
 PYBIND11_MODULE(rfta_bindings, m) {
 
@@ -23,6 +24,7 @@ PYBIND11_MODULE(rfta_bindings, m) {
     binding_locally_make_feasible(m);
     binding_fine_tune_point_cloud_iter(m);
     binding_point_cloud_to_mesh(m);
+    binding_power_diagram(m);
 
     // remove this later
     binding_outside_points_from_rejection_sampling(m);

@@ -51,8 +51,10 @@ add_library(PoissonRecon INTERFACE)
 # target_include_directories(PoissonRecon INTERFACE "${CMAKE_BINARY_DIR}/_deps/poissonrecon-src/Src/")
 target_include_directories(PoissonRecon INTERFACE "${EXT_DIR}/PoissonRecon/Src/")
 
+find_package(CGAL REQUIRED)
+
 # All libraries to link
-set(PROJ_LIBS igl::core igl::embree igl::glfw nanoflann PoissonRecon ${GL_LIBS})
+set(PROJ_LIBS igl::core igl::embree igl::glfw nanoflann PoissonRecon CGAL::CGAL ${GL_LIBS})
 
 add_library(cpp_rfta
 	STATIC
@@ -65,6 +67,7 @@ add_library(cpp_rfta
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/point_cloud_to_mesh.h"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/sAABB.h"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/resolve_collisions_on_sphere.h"
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/power_diagram.h"
 	# Source
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/outside_points_from_rasterization.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/outside_points_from_rejection_sampling.cpp"
@@ -73,6 +76,7 @@ add_library(cpp_rfta
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/point_cloud_to_mesh.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/sAABB.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/resolve_collisions_on_sphere.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/power_diagram.cpp"
 	)
 
 target_link_libraries(cpp_rfta "${PROJ_LIBS}")
@@ -87,6 +91,7 @@ pybind11_add_module(rfta_bindings
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/binding_locally_make_feasible.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/binding_fine_tune_point_cloud_iter.cpp"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/binding_point_cloud_to_mesh.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/binding_power_diagram.cpp"
 )
 
 target_link_libraries(rfta_bindings PUBLIC cpp_rfta "${PROJ_LIBS}")
