@@ -19,14 +19,13 @@ void binding_power_diagram(py::module& m) {
         {
             Eigen::MatrixXd sdf_points(_sdf_points), sdf_data(_sdf_data);
             const int dim = sdf_points.cols();
-            Eigen::MatrixXd V;
-            Eigen::MatrixXi E;
-            BoolVector Es;
+            Eigen::MatrixXd V_pdo, V_pdi, V_pc;
+            Eigen::MatrixXi E_pdo, E_pdi, E_pc;
             if(dim==2) {
-                power_diagram_2d(sdf_points, sdf_data, V, E, Es);
+                power_diagram_and_crust_from_sdf(sdf_points, sdf_data, V_pdo, V_pdi, V_pc, E_pdo, E_pdi, E_pc);
             } else if(dim==3) {
                 // TODO 3D
             }
-            return std::make_tuple(V, E, Es);
+            return std::make_tuple(V_pdo, V_pdi, V_pc, E_pdo, E_pdi, E_pc);
         });
 }

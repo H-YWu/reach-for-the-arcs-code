@@ -26,6 +26,6 @@ def power_diagram(U, S):
     d = U.shape[1]
     assert d==2 or d==3, "Only dimensions 2 and 3 supported."
 
-    V_pd, E_pd, Es_pd = _power_diagram_cpp_impl(U, S)
+    V_pdo, V_pdi, V_pc, E_pdo, E_pdi, E_pc = _power_diagram_cpp_impl(U, S)
 
-    return V_pd, E_pd, Es_pd
+    return V_pdo, V_pdi, V_pc, E_pdo, E_pdi, E_pc

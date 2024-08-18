@@ -1,90 +1,124 @@
-#include "power_diagram.h"
-
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/Regular_triangulation_2.h>
 #include <CGAL/draw_triangulation_2.h>
 
-#include <unordered_map>
+#include <Eigen/Core>
+
+#include <map>
 #include <iterator>
 #include <stdexcept>
 
-typedef CGAL::Exact_predicates_inexact_constructions_kernel K;
-typedef CGAL::Regular_triangulation_2<K> Regular_triangulation_2;
-typedef K::Point_2 Point_2;
-typedef K::Weighted_point_2 Weighted_point_2;
-typedef K::Iso_rectangle_2 Iso_rectangle_2;
-typedef K::Segment_2 Segment_2;
-typedef K::Ray_2 Ray_2;
-typedef K::Line_2 Line_2;
+typedef CGAL::Exact_predicates_inexact_constructions_kernel Kernel;
+typedef CGAL::Regular_triangulation_2<Kernel> Regular_triangulation_2;
+typedef Kernel::Point_2 Point_2;
+typedef Kernel::Weighted_point_2 Weighted_point_2;
+typedef Kernel::Iso_rectangle_2 Iso_rectangle_2;
+typedef Kernel::Segment_2 Segment_2;
+typedef Kernel::Ray_2 Ray_2;
+typedef Kernel::Line_2 Line_2;
 
-struct Cropped_power_from_regular2 {
-    std::vector<std::pair<Point_2, Point_2>> m_cropped_pd_edges;
-    std::vector<bool> m_is_edge_separator;
+
+struct Cropped_power_diagram_from_regular_triangulation {
+public:
+    std::vector<Point_2> m_pd_out_verts;
+    std::vector<Point_2> m_pd_in_verts;
+    std::vector<Point_2> m_pc_verts;
+    std::vector<std::pair<size_t, size_t>> m_pd_out_edges;
+    std::vector<std::pair<size_t, size_t>> m_pd_in_edges;
+    std::vector<std::pair<size_t, size_t>> m_pc_edges;
 
     Iso_rectangle_2 m_bbox;
-    Regular_triangulation_2 m_rt2;
-    std::unordered_map<Point_2, int> m_psigns;
+    std::unordered_map<Point_2, size_t> m_pd_out_pt_indices;
+    std::unordered_map<Point_2, size_t> m_pd_in_pt_indices;
+    std::unordered_map<Point_2, size_t> m_pc_pt_indices;
 
-    Cropped_power_from_regular2(
+    enum EdgeType {POWER_CRUST, POWER_DIAGRAM_OUT, POWER_DIAGRAM_IN};
+
+    size_t index_of_point(std::unordered_map<Point_2, size_t>& index_map, std::vector<Point_2>& verts, const Point_2& p) {
+        auto it = index_map.find(p);
+        if (it == index_map.end()) {
+            size_t idx = verts.size();
+            verts.emplace_back(p);
+            index_map[p] = idx;
+            return idx;
+        }
+        return it->second;
+    };
+
+    Cropped_power_diagram_from_regular_triangulation(
         const Iso_rectangle_2& bbox,
         const Regular_triangulation_2& rt2,
         const std::unordered_map<Point_2, int>& psigns
-    ) : m_bbox(bbox), m_rt2(rt2), m_psigns(psigns) {
-        crop_and_extract_all_segments();
-    }
+    ) : m_bbox(bbox) {
 
-    void crop_and_extract_all_segments() {
-        for (const auto& e : m_rt2.finite_edges()) {
-            CGAL::Object de = m_rt2.dual(e);
-            bool is_seg = false;
-            if (const Segment_2* seg = CGAL::object_cast<Segment_2>(&de)) {
-                is_seg = crop_and_extract_segment(*seg);
-            } else if (const Ray_2* ray = CGAL::object_cast<Ray_2>(&de)) {
-                is_seg = crop_and_extract_segment(*ray);
-            } else if (const Line_2* line = CGAL::object_cast<Line_2>(&de)) {
-                is_seg = crop_and_extract_segment(*line);
+        auto get_sign = [&](const Point_2& p) -> int {
+            auto it = psigns.find(p);
+            if (it == psigns.end()) {
+                throw std::runtime_error("No sign assigned to this point!");
             }
-            if (is_seg) {
-                auto vh1 = e.first->vertex((e.second + 1) % 3);
-                auto vh2 = e.first->vertex((e.second + 2) % 3);
-                Point_2 p1 = vh1->point().point();
-                Point_2 p2 = vh2->point().point();
-                auto get_sign = [&](const Point_2& p) -> size_t {
-                    auto it = m_psigns.find(p);
-                    if (it == m_psigns.end()) {
-                        throw std::runtime_error("No sign assigned to this point!");
-                    }
-                    return it->second;
-                };
-                int s1 = get_sign(p1), s2 = get_sign(p2);
-                if (s1 * s2 == -1) {
-                    m_is_edge_separator.emplace_back(true);
-                }
-                else {
-                    m_is_edge_separator.emplace_back(false);
-                }
-            } 
+            return it->second;
+        };
+
+
+        for (const Regular_triangulation_2::Edge& e : rt2.finite_edges()) {
+            // Classify the edge 
+            auto vh1 = e.first->vertex((e.second + 1) % 3);
+            auto vh2 = e.first->vertex((e.second + 2) % 3);
+            Point_2 c1 = vh1->point().point();
+            Point_2 c2 = vh2->point().point();
+            int s1 = get_sign(c1), s2 = get_sign(c2);
+            EdgeType etype;
+            if (s1 * s2 == -1) etype = POWER_CRUST; 
+            else if (s1 == 1) etype = POWER_DIAGRAM_OUT;
+            else etype = POWER_DIAGRAM_IN;
+            CGAL::Object de = rt2.dual(e);
+            // Extract a cropped power diagram edge
+            if (const Segment_2* seg = CGAL::object_cast<Segment_2>(&de)) {
+                crop_segment_and_add_edge(*seg, etype);
+            } else if (const Ray_2* ray = CGAL::object_cast<Ray_2>(&de)) {
+                crop_segment_and_add_edge(*ray, etype);
+            } else if (const Line_2* line = CGAL::object_cast<Line_2>(&de)) {
+                crop_segment_and_add_edge(*line, etype);
+            } else {
+                throw std::runtime_error("The dual of this edge is not a segment, ray or line!");
+            }
         }
     }
 
     template <class RSL>
-    bool crop_and_extract_segment(const RSL& rsl) {
+    void crop_segment_and_add_edge(const RSL& rsl, EdgeType etype) {
+        // Intersect with the bounding box so that it becomes a segment
         CGAL::Object obj = CGAL::intersection(rsl, m_bbox);
         const Segment_2* s = CGAL::object_cast<Segment_2>(&obj);
         if (s) {
-            m_cropped_pd_edges.emplace_back(s->source(), s->target());
-            return true;
+            Point_2 p1 = s->source();
+            Point_2 p2 = s->target();
+            if (etype == POWER_CRUST) {
+                size_t idx1 = index_of_point(m_pc_pt_indices, m_pc_verts, p1);
+                size_t idx2 = index_of_point(m_pc_pt_indices, m_pc_verts, p2);
+                m_pc_edges.emplace_back(idx1, idx2);
+            } else if (etype == POWER_DIAGRAM_OUT) {
+                size_t idx1 = index_of_point(m_pd_out_pt_indices, m_pd_out_verts, p1);
+                size_t idx2 = index_of_point(m_pd_out_pt_indices, m_pd_out_verts, p2);
+                m_pd_out_edges.emplace_back(idx1, idx2);
+            } else {
+                size_t idx1 = index_of_point(m_pd_in_pt_indices, m_pd_in_verts, p1);
+                size_t idx2 = index_of_point(m_pd_in_pt_indices, m_pd_in_verts, p2);
+                m_pd_in_edges.emplace_back(idx1, idx2);
+            }
         }
-        return false;
     }
 };
 
-void power_diagram_2d(
-    const Eigen::MatrixXd & sdf_points,
-    const Eigen::MatrixXd & sdf_data,
-    Eigen::MatrixXd & V,
-    Eigen::MatrixXi & E,
-    BoolVector & Es
+void power_diagram_and_crust_from_sdf(
+    const Eigen::MatrixXd& sdf_points,
+    const Eigen::MatrixXd& sdf_data,
+    Eigen::MatrixXd& V_power_diagram_out,
+    Eigen::MatrixXd& V_power_diagram_in,
+    Eigen::MatrixXd& V_power_crust,
+    Eigen::MatrixXi& E_power_diagram_out,
+    Eigen::MatrixXi& E_power_diagram_in,
+    Eigen::MatrixXi& E_power_crust
 ) {
     const int n = sdf_points.rows();
     assert(n == sdf_data.rows());
@@ -111,42 +145,40 @@ void power_diagram_2d(
 
     // Build cropped power diagram
     Regular_triangulation_2 rt2(wpoints.begin(), wpoints.end());
-    Cropped_power_from_regular2 pd(bbox, rt2, psigns);
+    Cropped_power_diagram_from_regular_triangulation cpd(bbox, rt2, psigns);
 
-    // Build V and E
-    std::unordered_map<Point_2, size_t> index_of_point;
-    std::vector<std::array<double, 2>> vec_V;
-    std::vector<std::array<size_t, 2>> vec_E;
-    for (const auto& segment : pd.m_cropped_pd_edges) {
-        auto insert_point = [&](const Point_2& p) -> size_t {
-            auto it = index_of_point.find(p);
-            if (it == index_of_point.end()) {
-                size_t index = vec_V.size();
-                vec_V.push_back({p.x(), p.y()});
-                index_of_point[p] = index;
-                return index;
-            }
-            return it->second;
-        };
-
-        size_t index1 = insert_point(segment.first);
-        size_t index2 = insert_point(segment.second);
-        vec_E.push_back({index1, index2});
-    }
     // Convert std::vector to Eigen::Matrix
-    V.resize(vec_V.size(), 2);
-    E.resize(vec_E.size(), 2);
-    Es.resize(pd.m_cropped_pd_edges.size(), 1);
-    for (size_t i = 0; i < vec_V.size(); i ++) {
-        V(i, 0) = vec_V[i][0];
-        V(i, 1) = vec_V[i][1];
+    V_power_diagram_out.resize(cpd.m_pd_out_verts.size(), 2);
+    V_power_diagram_in.resize(cpd.m_pd_in_verts.size(), 2);
+    V_power_crust.resize(cpd.m_pc_verts.size(), 2);
+    E_power_diagram_out.resize(cpd.m_pd_out_edges.size(), 2);
+    E_power_diagram_in.resize(cpd.m_pd_in_edges.size(), 2);
+    E_power_crust.resize(cpd.m_pc_edges.size(), 2);
+    for (size_t i = 0; i < cpd.m_pd_out_verts.size(); i ++) {
+        Point_2 p = cpd.m_pd_out_verts[i];
+        V_power_diagram_out(i, 0) = CGAL::to_double(p.x());
+        V_power_diagram_out(i, 1) = CGAL::to_double(p.y());
     }
-    for (size_t i = 0; i < vec_E.size(); i ++) {
-        E(i, 0) = vec_E[i][0];
-        E(i, 1) = vec_E[i][1];
+    for (size_t i = 0; i < cpd.m_pd_in_verts.size(); i ++) {
+        Point_2 p = cpd.m_pd_in_verts[i];
+        V_power_diagram_in(i, 0) = CGAL::to_double(p.x());
+        V_power_diagram_in(i, 1) = CGAL::to_double(p.y());
     }
-    for (size_t i = 0; i < pd.m_is_edge_separator.size(); i ++) {
-        Es(i) = pd.m_is_edge_separator[i];
-        Es(i) = pd.m_is_edge_separator[i];
+    for (size_t i = 0; i < cpd.m_pc_verts.size(); i ++) {
+        Point_2 p = cpd.m_pc_verts[i];
+        V_power_crust(i, 0) = CGAL::to_double(p.x());
+        V_power_crust(i, 1) = CGAL::to_double(p.y());
+    }
+    for (size_t i = 0; i < cpd.m_pd_out_edges.size(); i ++) {
+        E_power_diagram_out(i, 0) = cpd.m_pd_out_edges[i].first;
+        E_power_diagram_out(i, 1) = cpd.m_pd_out_edges[i].second;
+    }
+    for (size_t i = 0; i < cpd.m_pd_in_edges.size(); i ++) {
+        E_power_diagram_in(i, 0) = cpd.m_pd_in_edges[i].first;
+        E_power_diagram_in(i, 1) = cpd.m_pd_in_edges[i].second;
+    }
+    for (size_t i = 0; i < cpd.m_pc_edges.size(); i ++) {
+        E_power_crust(i, 0) = cpd.m_pc_edges[i].first;
+        E_power_crust(i, 1) = cpd.m_pc_edges[i].second;
     }
 }
