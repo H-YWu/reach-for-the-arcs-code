@@ -18,13 +18,17 @@ BLACK = [0.0, 0.0, 0.0]
 ORANGE = [1.0, 0.5, 0.0]
 PURPLE = [0.5, 0.0, 0.5]
 
-sphere_group_prefix = "SDF Sphere"
+def generate_unit_circle(num_points=30):
+    global V_unit_sphere, E_unit_sphere
 
-def toggle_spheres_visibility(show):
-    for i in range(len(spheres)):
-        name = f"{sphere_group_prefix} {i}: radius = {np.abs(spheres[i][2])}"
-        if ps.has_point_cloud(name):
-            ps.get_point_cloud(name).set_enabled(show)
+    theta = np.linspace(0, 2 * np.pi, num_points, endpoint=False)
+    V_unit_sphere = np.array([[np.cos(t), np.sin(t)] for t in theta])
+    E_unit_sphere = np.array([(i, (i + 1) % num_points) for i in range(num_points)])
+
+def adjust_sphere_V(center, radius):
+    global V_unit_sphere
+
+    return center + radius * V_unit_sphere 
 
 def spheres_tangent(center1, radius1, center2, radius2, epsilon=1e-9):
     distance = math.sqrt(math.pow(center1[0]-center2[0], 2) + math.pow(center1[1]-center2[1], 2))
@@ -35,18 +39,26 @@ def spheres_tangent(center1, radius1, center2, radius2, epsilon=1e-9):
     else:
         return False, None
 
-def check_spheres():
-    global spheres
+def is_excluded_sphere(s):
+    global min_out_filter_radius, max_out_filter_radius, min_in_filter_radius, max_in_filter_radius
+
+    if s > 0 and (s < min_out_filter_radius or s > max_out_filter_radius):
+        return True
+    if s < 0 and (s < -max_in_filter_radius or s > -min_in_filter_radius):
+        return True
+    return False
+
+def spheres_statistics():
     global num_spheres, num_tangent_pairs, num_overlap_pairs, num_in_out_tangent_pairs, num_contained_spheres
 
-    num_spheres = len(spheres)
+    num_spheres = U_ori.shape[0] 
     is_contained = [False for _ in range(num_spheres)]
     num_tangent_pairs = 0
     num_overlap_pairs = 0
     num_in_out_tangent_pairs = 0
 
-    for i, (centeri, _, si) in enumerate(spheres):
-        for j, (centerj, _, sj) in enumerate(spheres):
+    for i, (centeri, si) in enumerate(zip(U_ori, S_ori)):
+        for j, (centerj, sj) in enumerate(zip(U_ori, S_ori)):
             if j >= i:
                 break
             tangent, msg = spheres_tangent(centeri, abs(si), centerj, abs(sj))
@@ -60,24 +72,49 @@ def check_spheres():
                     num_overlap_pairs += 1
                 elif si * sj < 0:
                     num_in_out_tangent_pairs = 1
-    
+ 
     num_contained_spheres = sum(is_contained)
 
+def closest_distance(center1, radius1, center2, radius2):
+    center_dist = math.sqrt(math.pow(center1[0]-center2[0], 2) + math.pow(center1[1]-center2[1], 2))
+    closest_dist = center_dist - (radius1 + radius2)
+    return closest_dist
+
+def spheres_distance():
+    global min_closest_distance_spheres, num_spheres
+
+    num_spheres = U_ori.shape[0] 
+    min_closest_distance_spheres = [float('inf') for _ in range(num_spheres)]
+
+    for i, (centeri, si) in enumerate(zip(U_ori, S_ori)):
+        if is_excluded_sphere(si):
+            continue
+        for j, (centerj, sj) in enumerate(zip(U_ori, S_ori)):
+            if j >= i:
+                break
+            if is_excluded_sphere(sj):
+                continue
+            if si * sj < 0:
+                continue
+            closest_dist = closest_distance(centeri, abs(si), centerj, abs(sj))
+            if closest_dist < min_closest_distance_spheres[i]:
+                min_closest_distance_spheres[i] = closest_dist
+            if closest_dist < min_closest_distance_spheres[j]:
+                min_closest_distance_spheres[j] = closest_dist
+
 def set_current_box():
-    global bbox_min_x, bbox_max_x, bbox_min_y, bbox_max_y
-    global cur_bbox_min_x, cur_bbox_max_x, cur_bbox_min_y, cur_bbox_max_y
-    global box_x_dis, box_y_dis
+    global bbox_min, bbox_max
+    global cur_bbox_min, cur_bbox_max
+    global bbox_dis
     global cur_per
 
-    cur_bbox_min_x = bbox_min_x - box_x_dis * cur_per
-    cur_bbox_max_x = bbox_max_x + box_x_dis * cur_per
-    cur_bbox_min_y = bbox_min_y - box_y_dis * cur_per
-    cur_bbox_max_y = bbox_max_y + box_y_dis * cur_per
+    cur_bbox_min = bbox_min - bbox_dis * cur_per
+    cur_bbox_max = bbox_max + bbox_dis * cur_per
 
 def ground_truth_polygon_from_png(filepath):
     global V_gt, F_gt
-    global bbox_min_x, bbox_max_x, bbox_min_y, bbox_max_y
-    global box_x_dis, box_y_dis
+    global bbox_min, bbox_max
+    global bbox_dis
 
     poly_list = gpy.png2poly(filepath)
     # Downsample polygon 
@@ -103,81 +140,85 @@ def ground_truth_polygon_from_png(filepath):
     bbox_max_x = np.max(V_gt[:, 0])
     bbox_min_y = np.min(V_gt[:, 1])
     bbox_max_y = np.max(V_gt[:, 1])
-    box_x_dis = bbox_max_x - bbox_min_x
-    box_y_dis = bbox_max_y - bbox_min_y
+    bbox_min = min(bbox_min_x, bbox_min_y)
+    bbox_max = max(bbox_max_x, bbox_max_y)
+    bbox_dis = bbox_max - bbox_min 
     set_current_box()
 
 def create_sdf():
     global n, sdf
-    global min_filter_radius, max_filter_radius
-    global min_radius, max_radius
-    global U_ori, S_ori, spheres
-    global cur_bbox_min_x, cur_bbox_max_x, cur_bbox_min_y, cur_bbox_max_y
+    global min_out_filter_radius, max_out_filter_radius, min_out_radius, max_out_radius
+    global min_in_filter_radius, max_in_filter_radius, min_in_radius, max_in_radius
+    global U_ori, S_ori
+    global cur_bbox_min, cur_bbox_max
 
+    sdf = lambda x: gpy.signed_distance(x, V_gt, F_gt)[0]
     # Set up a grid
-    # gx, gy = np.meshgrid(np.linspace(-1.0, 1.0, n + 1), np.linspace(-1.0, 1.0, n + 1))
-    gx, gy = np.meshgrid(np.linspace(cur_bbox_min_x, cur_bbox_max_x, n + 1), np.linspace(cur_bbox_min_y, cur_bbox_max_y, n + 1))
+    gx, gy = np.meshgrid(np.linspace(cur_bbox_min, cur_bbox_max, n + 1), np.linspace(cur_bbox_min, cur_bbox_max, n + 1))
     U_ori = np.vstack((gx.flatten(), gy.flatten())).T
     S_ori = sdf(U_ori)
 
-    # SDF as spheres 
-    spheres = []
-    for i, (p, s) in enumerate(zip(U_ori, S_ori)):
-        radius = np.abs(s)
-        center = p
-        # Sampled sphere points
-        theta = np.linspace(0, 2 * np.pi, 10 * int(radius/min(np.abs(S_ori))))
-        sphere_points = np.array([center + radius * np.array([np.cos(t), np.sin(t)]) for t in theta])
-        sphere = (center, sphere_points, s)
-        spheres.append(sphere)
-    
     out_S = S_ori[S_ori>0] 
-    min_radius = np.min(out_S)
-    max_radius = np.max(out_S)
-    min_filter_radius = min_radius
-    max_filter_radius = max_radius
+    min_out_radius = np.min(out_S)
+    max_out_radius = np.max(out_S)
+    min_out_filter_radius = min_out_radius
+    max_out_filter_radius = max_out_radius
+    in_S = S_ori[S_ori<0] 
+    min_in_radius = np.min(np.abs(in_S))
+    max_in_radius = np.max(np.abs(in_S))
+    min_in_filter_radius = min_in_radius
+    max_in_filter_radius = max_in_radius
 
 def create_filtered_sdf():
     global U_f, S_f
+    global min_out_filter_radius, max_out_filter_radius, min_in_filter_radius, max_in_filter_radius
+
     valid_indices = np.where(
-        ((S_ori > 0) & (S_ori >= min_filter_radius) & (S_ori <= max_filter_radius)) | (S_ori < 0)
+        ((S_ori > 0) & (S_ori >= min_out_filter_radius) & (S_ori <= max_out_filter_radius)) | 
+        ((S_ori < 0) & (S_ori <= -min_in_filter_radius) & (S_ori >= -max_in_filter_radius))
     )
     U_f = U_ori[valid_indices]
     S_f = S_ori[valid_indices]
 
 def create_power_diagram():
-    global V_pd, E_pd, Es_pd, Ec_pd
+    global V_pdo, V_pdi, V_pc, E_pdo, E_pdi, E_pc
     global U_f, S_f
 
-    V_pd, E_pd, Es_pd = nrfta.power_diagram(U_f, S_f)
+    V_pdo, V_pdi, V_pc, E_pdo, E_pdi, E_pc = nrfta.power_diagram(U_f, S_f)
 
-    Ec_pd = np.zeros((Es_pd.shape[0], 3))
+def rfts_from_power_crust():
+    global U_ori, sdf
+    global V_pc, E_pc, V_rfts, E_rfts
 
-    for i in range(Es_pd.shape[0]):
-        if Es_pd[i]:
-            Ec_pd[i] = BLACK 
-        else:
-            Ec_pd[i] = GREEN
+    V_rfts, E_rfts = gpy.reach_for_the_spheres(U_ori, sdf, V_pc, E_pc)
 
 def visualize():
-    global min_filter_radius, max_filter_radius
-    global U_ori, sphere, V_gt, F_gt, V_rfta, F_rfta, P_pos, Pf, Pf_pos, Pf_neg, N, N_pos, N_neg
+    global min_out_filter_radius, max_out_filter_radius
+    global U_ori, V_ori, V_gt, F_gt, V_rfta, F_rfta, P_pos, Pf, Pf_pos, Pf_neg, N, N_pos, N_neg
     global current_step, fine_tune_current_iter
-    global V_pd, E_pd, Ec_pd
+    global V_pdo, V_pdi, V_pc, E_pdo, E_pdi, E_pc
+    global E_unit_sphere, show_spheres
+    global min_closest_distance_spheres, show_thin
 
     ps.remove_all_structures()
-    ps.register_curve_network("Ground Truth (Rotated)", V_gt, F_gt, radius=0.001, color=CYAN)
-    ps.register_point_cloud(f"Grid Points", U_ori, radius=0.003, color=YELLOW)
+    ps.register_curve_network("Ground Truth (Rotated)", V_gt, F_gt, radius=0.001, color=ORANGE)
+    ps.register_point_cloud(f"Grid Points", U_ori, radius=0.0017, color=YELLOW)
 
     if current_step == 0:
-        for i, (_, points, s) in enumerate(spheres):
-            radius = np.abs(s)
-            if s > 0 and (radius < min_filter_radius or radius > max_filter_radius):
-                continue
-            scolor = RED if s > 0 else BLUE
-            ps.register_point_cloud(f"{sphere_group_prefix} {i}: radius = {radius}", points, radius=0.0005, color=scolor)
-        pd = ps.register_curve_network("Power Diagram", V_pd, E_pd, radius=0.001)
-        pd.add_color_quantity("Color of PD Edge", Ec_pd, defined_on='edges',enabled=True)
+        if show_spheres:
+            for i, (center, s) in enumerate(zip(U_ori, S_ori)):
+                if is_excluded_sphere(s):
+                    continue
+                radius = np.abs(s)
+                scolor = RED if s > 0 else BLUE
+                show_radius = 0.0005
+                if show_thin and min_closest_distance_spheres[i] > 0.0:
+                    show_radius = 0.002
+                ps.register_curve_network(f"SDF Sphere {i}", adjust_sphere_V(center, radius), E_unit_sphere, radius=show_radius, color=scolor)
+
+        ps.register_curve_network("Power Diagram Out", V_pdo, E_pdo, radius=0.001, color=GREEN)
+        ps.register_curve_network("Power Diagram In", V_pdi, E_pdi, radius=0.001, color=YELLOW)
+        ps.register_curve_network("Power Crust", V_pc, E_pc, radius=0.002, color=BLACK)
     if current_step == 1:
         if not (P_pos is None or P_pos.size==0):
             ps.register_point_cloud("(Positive) Sampled Points", scale*P_pos + trans[None,:], radius=0.003, color=LIGHTRED)
@@ -254,7 +295,7 @@ def step_forward(tol=1e-4):
                 local_search_iters=local_search_iters,
                 batch_size=batch_size,
                 num_rasterization_spheres=num_rasterization_spheres,
-                tol=tol, 
+                tol=tol,
                 parallel=parallel)
         else:
             P_pos,N_pos,f_pos,Pf_pos = None,None,None,None
@@ -363,11 +404,13 @@ def change_list_size(lst, new_size):
         del lst[new_size:]
 
 def callback():
-    global png_files_selected, png_selected_index, n, min_filter_radius, max_filter_radius, cur_per, show_spheres
-    global V_gt, F_gt, sdf, spheres, min_radius, max_radius
+    global png_files_selected, png_selected_index, n, cur_per, show_spheres, show_thin
+    global V_gt, F_gt, sdf
+    global min_out_filter_radius, max_out_filter_radius, min_out_radius, max_out_radius
+    global min_in_filter_radius, max_in_filter_radius, min_in_radius, max_in_radius
     global num_spheres, num_tangent_pairs, num_overlap_pairs, num_in_out_tangent_pairs, num_contained_spheres
     global current_step, step_names, fine_tune_current_iter, fine_tune_iters
-    
+ 
     psim.PushItemWidth(300)
 
     if psim.Button("Reset"):
@@ -398,7 +441,7 @@ def callback():
         psim.TextUnformatted(f": Iter {fine_tune_current_iter}")
     
     psim.Separator()
-    num_widges = 6
+    num_widges = 8
     changed = [False for _ in range(num_widges)]
 
     changed[0] = psim.BeginCombo("Input Shape", png_files_selected)
@@ -411,23 +454,29 @@ def callback():
         psim.EndCombo()
         ground_truth_polygon_from_png(png_paths[png_selected_index])
         # Create and abstract SDF function that is the only connection to the shape
-        sdf = lambda x: gpy.signed_distance(x, V_gt, F_gt)[0]
 
-    changed[1], n = psim.SliderInt("Grid Resolution", n, v_min=5, v_max=50)
+    changed[1], n = psim.SliderInt("Grid Resolution", n, v_min=5, v_max=100)
 
     psim.TextUnformatted("Exclude Outer Spheres with Radius: ")
     psim.PushItemWidth(150)
-    changed[2], min_filter_radius = psim.SliderFloat("below", min_filter_radius, v_min=min_radius, v_max=max_radius) 
+    changed[2], min_out_filter_radius = psim.SliderFloat("below (out)", min_out_filter_radius, v_min=min_out_radius, v_max=max_out_radius) 
     psim.SameLine()
-    changed[3], max_filter_radius = psim.SliderFloat("above", max_filter_radius, v_min=min_filter_radius, v_max=max_radius)
+    changed[3], max_out_filter_radius = psim.SliderFloat("above (out)", max_out_filter_radius, v_min=min_out_filter_radius, v_max=max_out_radius)
     psim.PopItemWidth()
 
-    if changed[2] or changed[3]:
+    psim.TextUnformatted("Exclude Inner Spheres with Radius: ")
+    psim.PushItemWidth(150)
+    changed[4], min_in_filter_radius = psim.SliderFloat("below (in)", min_in_filter_radius, v_min=min_in_radius, v_max=max_in_radius) 
+    psim.SameLine()
+    changed[5], max_in_filter_radius = psim.SliderFloat("above (in)", max_in_filter_radius, v_min=min_in_filter_radius, v_max=max_in_radius)
+    psim.PopItemWidth()
+
+    if changed[2] or changed[3] or changed[4] or changed[5]:
         create_filtered_sdf()
         create_power_diagram()
 
-    changed[4], fine_tune_iters = psim.SliderInt("Fine-Tune Iterations", fine_tune_iters, v_min=max(1, fine_tune_current_iter), v_max=50)
-    if changed[4]:
+    changed[6], fine_tune_iters = psim.SliderInt("Fine-Tune Iterations", fine_tune_iters, v_min=max(1, fine_tune_current_iter), v_max=50)
+    if changed[6]:
         change_list_size(P, fine_tune_iters+1)
         change_list_size(N, fine_tune_iters+1)
         change_list_size(f, fine_tune_iters+1)
@@ -435,26 +484,35 @@ def callback():
         change_list_size(V_rfta, fine_tune_iters+1)
         change_list_size(F_rfta, fine_tune_iters+1)
     
-    changed[5], cur_per = psim.SliderFloat("SDF Enlarged Percentage", cur_per, v_min=min_per, v_max=max_per)
-    if changed[5]:
+    changed[7], cur_per = psim.SliderFloat("SDF Enlarged Percentage", cur_per, v_min=min_per, v_max=max_per)
+    if changed[7]:
         set_current_box()
 
-    if changed[0] or changed[1] or changed[5]:
+    if changed[0] or changed[1] or changed[7]:
         create_sdf()
         create_filtered_sdf()
         create_power_diagram()
-        # check_spheres()
+        # spheres_statistics()
         reset()
     
-    if any(changed):
-        visualize()
-
+    last_show_sphere = show_spheres
     if psim.Button("Show Spheres"):
         show_spheres = True
     psim.SameLine()
     if psim.Button("Hide Spheres"):
-        show_spheres = False 
-    toggle_spheres_visibility(show_spheres)
+        show_spheres = False
+    
+    show_thin = False
+    if psim.Button("Guess Thin Parts"):
+        spheres_distance()
+        show_thin = True
+
+    if any(changed) or last_show_sphere != show_spheres or show_thin:
+        visualize()
+    
+    # if psim.Button("RFTS From Power Crust (BUG)"):
+    #     rfts_from_power_crust()
+    #     ps.register_curve_network("RFTS", V_rfts, E_rfts, radius=0.0002, color=RED)
 
     psim.Separator()
     psim.TextUnformatted(f"#Spheres: {num_spheres}")
@@ -465,45 +523,52 @@ def callback():
 
     psim.PopItemWidth()
 
-# Parameters 
+
+# Command line arguments
+parser = argparse.ArgumentParser(description='2D Test Framework.')
+parser.add_argument('file_name', type=str, nargs='?', default=None, help='The file name to process')
+args = parser.parse_args()
+
+# Parameters
 ## Selectable input shapes
-png_selected_index = 0 
 data_dir = 'data/'
 all_files = os.listdir(data_dir)
 ### Used for options
 png_files = [file for file in all_files if file.lower().endswith('.png')]
+if args.file_name and args.file_name in png_files:
+    png_selected_index = png_files.index(args.file_name)
+else:
+    png_selected_index = 0
 png_files_selected = png_files[png_selected_index]
 ### Used for locate
-png_paths = []
-for png_file in png_files:
-    png_paths.append(os.path.join(data_dir, png_file))
-## Show spheres
-show_spheres = True
+png_paths = [os.path.join(data_dir, png_file) for png_file in png_files]
 ## Grid resolution: nxn
 n = 10
 ## Bounding box size for SDF
 ### Fit
-bbox_min_x = -1.0 
-bbox_max_x = 1.0 
-bbox_min_y = -1.0 
-bbox_max_y = 1.0 
+bbox_min = -1.0 
+bbox_max = 1.0
 ### Current
-cur_bbox_min_x = -1.0 
-cur_bbox_max_x = 1.0 
-cur_bbox_min_y = -1.0 
-cur_bbox_max_y = 1.0 
+cur_bbox_min = -1.0 
+cur_bbox_max = 1.0 
 ### Fit box size
-box_x_dis = 2.0 
-box_y_dis = 2.0 
+box_dis = 2.0 
 ### Percentage for controlling
 min_per = 0.005
 max_per = 1.0
 cur_per = 0.3
+## Shpere
+show_spheres = False
 ## Filter outer spheres by radius
-min_radius = 0
-max_radius = 0
-min_filter_radius = 0
-max_filter_radius = 0
+min_out_radius = 0
+max_out_radius = 0
+min_out_filter_radius = 0
+max_out_filter_radius = 0
+## Filter inner spheres by radius
+min_in_radius = 0
+max_in_radius = 0
+min_in_filter_radius = 0
+max_in_filter_radius = 0
 ## Customized Statistics
 num_spheres = 0
 num_tangent_pairs = 0
@@ -534,7 +599,7 @@ U = None
 U_ori = None
 S = None
 S_ori = None
-spheres = None
+spheres = [] 
 P = None
 P_pos = None
 P_neg = None
@@ -555,23 +620,36 @@ scale = None
 #### Power diagram
 U_f = None
 S_f = None
-V_pd = None
-E_pd = None
-Es_pd = None
-Ec_pd = None
-        
+V_pdo = None
+V_pdi = None
+V_pdc = None
+E_pdo = None
+E_pdi = None
+E_pdc = None
+
+V_unit_sphere = None
+E_unit_sphere = None
+ 
+V_rfts = None
+E_rfts = None
+
+min_closest_distance_spheres = []
+
+show_thin = False
+
 # Setup 2D polyscope
 ps.init()
 ps.set_navigation_style("planar")
 
+generate_unit_circle()
+
 # Default configuration 
 ground_truth_polygon_from_png(png_paths[png_selected_index])
 # Create and abstract SDF function that is the only connection to the shape
-sdf = lambda x: gpy.signed_distance(x, V_gt, F_gt)[0]
 create_sdf()
 create_filtered_sdf()
 create_power_diagram()
-# check_spheres()
+# spheres_statistics()
 visualize()
 
 ps.set_user_callback(callback)
