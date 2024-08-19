@@ -39,15 +39,6 @@ def spheres_tangent(center1, radius1, center2, radius2, epsilon=1e-9):
     else:
         return False, None
 
-def is_excluded_sphere(s):
-    global min_out_filter_radius, max_out_filter_radius, min_in_filter_radius, max_in_filter_radius
-
-    if s > 0 and (s < min_out_filter_radius or s > max_out_filter_radius):
-        return True
-    if s < 0 and (s < -max_in_filter_radius or s > -min_in_filter_radius):
-        return True
-    return False
-
 def spheres_statistics():
     global num_spheres, num_tangent_pairs, num_overlap_pairs, num_in_out_tangent_pairs, num_contained_spheres
 
@@ -81,19 +72,16 @@ def closest_distance(center1, radius1, center2, radius2):
     return closest_dist
 
 def spheres_distance():
-    global min_closest_distance_spheres, num_spheres
+    global min_closest_distance_spheres
+    global U_f, S_f
 
-    num_spheres = U_ori.shape[0] 
-    min_closest_distance_spheres = [float('inf') for _ in range(num_spheres)]
+    num_fs = U_f.shape[0] 
+    min_closest_distance_spheres = [float('inf') for _ in range(num_fs)]
 
-    for i, (centeri, si) in enumerate(zip(U_ori, S_ori)):
-        if is_excluded_sphere(si):
-            continue
-        for j, (centerj, sj) in enumerate(zip(U_ori, S_ori)):
+    for i, (centeri, si) in enumerate(zip(U_f, S_f)):
+        for j, (centerj, sj) in enumerate(zip(U_f, S_f)):
             if j >= i:
                 break
-            if is_excluded_sphere(sj):
-                continue
             if si * sj < 0:
                 continue
             closest_dist = closest_distance(centeri, abs(si), centerj, abs(sj))
@@ -194,7 +182,7 @@ def rfts_from_power_crust():
 
 def visualize():
     global min_out_filter_radius, max_out_filter_radius
-    global U_ori, V_ori, V_gt, F_gt, V_rfta, F_rfta, P_pos, Pf, Pf_pos, Pf_neg, N, N_pos, N_neg
+    global U_ori, S_ori, U_f, S_f, V_gt, F_gt, V_rfta, F_rfta, P_pos, Pf, Pf_pos, Pf_neg, N, N_pos, N_neg
     global current_step, fine_tune_current_iter
     global V_pdo, V_pdi, V_pc, E_pdo, E_pdi, E_pc
     global E_unit_sphere, show_spheres
@@ -206,9 +194,7 @@ def visualize():
 
     if current_step == 0:
         if show_spheres:
-            for i, (center, s) in enumerate(zip(U_ori, S_ori)):
-                if is_excluded_sphere(s):
-                    continue
+            for i, (center, s) in enumerate(zip(U_f, S_f)):
                 radius = np.abs(s)
                 scolor = RED if s > 0 else BLUE
                 show_radius = 0.0005
