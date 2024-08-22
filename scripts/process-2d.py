@@ -168,25 +168,65 @@ def create_filtered_sdf():
     U_f = U_ori[valid_indices]
     S_f = S_ori[valid_indices]
 
+def create_voronoi_diagram():
+    global V_vdo, V_vdi, V_vc, E_vdo, E_vdi, E_vc
+    global U_f, S_f
+
+    Sv_f = np.array([1.0 if s > 0.0 else -1.0 for s in S_f])
+
+    V_vdo, V_vdi, V_vc, E_vdo, E_vdi, E_vc = nrfta.power_diagram(U_f, Sv_f)
+
 def create_power_diagram():
     global V_pdo, V_pdi, V_pc, E_pdo, E_pdi, E_pc
     global U_f, S_f
 
     V_pdo, V_pdi, V_pc, E_pdo, E_pdi, E_pc = nrfta.power_diagram(U_f, S_f)
 
+def create_marching_cubes():
+    global V_mc, F_mc, n, U_ori, S_ori
+
+    V_mc, F_mc = gpy.marching_squares(S_ori, U_ori, n+1, n+1)
+
+def create_filtered_rfta():
+    global V_rfta, F_rfta
+    global U_f, S_f
+
+    V_rfta, F_rfta = rfta.reach_for_the_arcs(U_f, S_f, verbose=False, parallel=True,
+        fine_tune_iters=10)
+
 def rfts_from_power_crust():
     global U_ori, sdf
-    global V_pc, E_pc, V_rfts, E_rfts
+    global V_pc, E_pc, V_rfts, F_rfts
 
-    V_rfts, E_rfts = gpy.reach_for_the_spheres(U_ori, sdf, V_pc, E_pc)
+    V_rfts, F_rfts = gpy.reach_for_the_spheres(U_ori, sdf, V_pc, E_pc)
+
+def create_filtered_rfts(imesh=0):
+    global U_f, sdf
+    global V_rfts, F_rfts
+    global V_mc, F_mc, V_pc, E_pc
+
+    # imesh == 0
+    V0, F0 = gpy.regular_circle_polyline(12)
+    if imesh == 1:
+        V0 = V_mc
+        F0 = F_mc
+    elif imesh == 2:
+        V0 = V_pc
+        F0 = E_pc
+
+    V_rfts, F_rfts = gpy.reach_for_the_spheres(U_f, sdf, V0, F0)
 
 def visualize():
     global min_out_filter_radius, max_out_filter_radius
-    global U_ori, S_ori, U_f, S_f, V_gt, F_gt, V_rfta, F_rfta, P_pos, Pf, Pf_pos, Pf_neg, N, N_pos, N_neg
+    global U_ori, S_ori, U_f, S_f, V_gt, F_gt, P_pos, Pf, Pf_pos, Pf_neg, N, N_pos, N_neg
     global current_step, fine_tune_current_iter
     global V_pdo, V_pdi, V_pc, E_pdo, E_pdi, E_pc
     global E_unit_sphere, show_spheres
     global min_closest_distance_spheres, show_thin
+    global V_mc, F_mc
+    global show_voro, V_vdo, V_vdi, V_vc, E_vdo, E_vdi, E_vc
+    global show_rfta, V_rfta, F_rfta
+    global show_rfts, V_rfts, F_rfts
 
     ps.remove_all_structures()
     ps.register_curve_network("Ground Truth (Rotated)", V_gt, F_gt, radius=0.001, color=ORANGE)
@@ -205,6 +245,14 @@ def visualize():
         ps.register_curve_network("Power Diagram Out", V_pdo, E_pdo, radius=0.001, color=GREEN)
         ps.register_curve_network("Power Diagram In", V_pdi, E_pdi, radius=0.001, color=YELLOW)
         ps.register_curve_network("Power Crust", V_pc, E_pc, radius=0.002, color=BLACK)
+        ps.register_curve_network("Marching Cubes", V_mc, F_mc, radius=0.002, color=RED, enabled=False)
+        if show_voro:
+            ps.register_curve_network("Voronoi Crust", V_vc, E_vc, radius=0.002, color=BLUE)
+        if show_rfta:
+            ps.register_curve_network("Reach For the Arcs", V_rfta, F_rfta, radius=0.002, color=RED)
+        if show_rfts:
+            ps.register_curve_network("Reach For the Spheres", V_rfts, F_rfts, radius=0.002, color=GREEN)
+
     if current_step == 1:
         if not (P_pos is None or P_pos.size==0):
             ps.register_point_cloud("(Positive) Sampled Points", scale*P_pos + trans[None,:], radius=0.003, color=LIGHTRED)
@@ -396,6 +444,7 @@ def callback():
     global min_in_filter_radius, max_in_filter_radius, min_in_radius, max_in_radius
     global num_spheres, num_tangent_pairs, num_overlap_pairs, num_in_out_tangent_pairs, num_contained_spheres
     global current_step, step_names, fine_tune_current_iter, fine_tune_iters
+    global show_voro, show_rfta, show_rfts
  
     psim.PushItemWidth(300)
 
@@ -457,10 +506,6 @@ def callback():
     changed[5], max_in_filter_radius = psim.SliderFloat("above (in)", max_in_filter_radius, v_min=min_in_filter_radius, v_max=max_in_radius)
     psim.PopItemWidth()
 
-    if changed[2] or changed[3] or changed[4] or changed[5]:
-        create_filtered_sdf()
-        create_power_diagram()
-
     changed[6], fine_tune_iters = psim.SliderInt("Fine-Tune Iterations", fine_tune_iters, v_min=max(1, fine_tune_current_iter), v_max=50)
     if changed[6]:
         change_list_size(P, fine_tune_iters+1)
@@ -473,12 +518,37 @@ def callback():
     changed[7], cur_per = psim.SliderFloat("SDF Enlarged Percentage", cur_per, v_min=min_per, v_max=max_per)
     if changed[7]:
         set_current_box()
+    
+    show_voro = False
+    if psim.Button("Voronoi crust"):
+        create_voronoi_diagram()
+        show_voro = True
+    show_rfta = False
+    if psim.Button("RFTA"):
+        create_filtered_rfta()
+        show_rfta = True
+    show_rfts = False 
+    if psim.Button("RFTS (Sphere)"):
+        create_filtered_rfts(0)
+        show_rfts = True
+    psim.SameLine()
+    if psim.Button("RFTS (Marching Cube)"):
+        create_filtered_rfts(1)
+        show_rfts = True
+    psim.SameLine()
+    if psim.Button("RFTS (Power Crust)"):
+        create_filtered_rfts(2)
+        show_rfts = True
+ 
+    if changed[2] or changed[3] or changed[4] or changed[5]:
+        create_filtered_sdf()
+        create_power_diagram()
 
     if changed[0] or changed[1] or changed[7]:
         create_sdf()
         create_filtered_sdf()
         create_power_diagram()
-        # spheres_statistics()
+        create_marching_cubes()
         reset()
     
     last_show_sphere = show_spheres
@@ -487,18 +557,14 @@ def callback():
     psim.SameLine()
     if psim.Button("Hide Spheres"):
         show_spheres = False
-    
+ 
     show_thin = False
     if psim.Button("Guess Thin Parts"):
         spheres_distance()
         show_thin = True
 
-    if any(changed) or last_show_sphere != show_spheres or show_thin:
+    if any(changed) or last_show_sphere != show_spheres or show_thin or show_voro or show_rfta or show_rfts:
         visualize()
-    
-    # if psim.Button("RFTS From Power Crust (BUG)"):
-    #     rfts_from_power_crust()
-    #     ps.register_curve_network("RFTS", V_rfts, E_rfts, radius=0.0002, color=RED)
 
     psim.Separator()
     psim.TextUnformatted(f"#Spheres: {num_spheres}")
@@ -543,18 +609,6 @@ box_dis = 2.0
 min_per = 0.005
 max_per = 1.0
 cur_per = 0.3
-## Shpere
-show_spheres = False
-## Filter outer spheres by radius
-min_out_radius = 0
-max_out_radius = 0
-min_out_filter_radius = 0
-max_out_filter_radius = 0
-## Filter inner spheres by radius
-min_in_radius = 0
-max_in_radius = 0
-min_in_filter_radius = 0
-max_in_filter_radius = 0
 ## Customized Statistics
 num_spheres = 0
 num_tangent_pairs = 0
@@ -576,68 +630,24 @@ n_local_searches = None
 local_search_iters = 20
 local_search_t = 0.01
 parallel = False
-### Saved states
-V_gt = None
-F_gt = None
-V_rfta = None
-F_rfta = None
-U = None
-U_ori = None
-S = None
-S_ori = None
-spheres = [] 
-P = None
-P_pos = None
-P_neg = None
-Pf = None
-Pf_pos = None
-Pf_neg = None
-N = None
-N_pos = None
-N_neg = None
-f = None
-f_pos = None
-f_neg = None
-rng = None 
-seed = None
-n_sdf = 0
-trans = None
-scale = None 
-#### Power diagram
-U_f = None
-S_f = None
-V_pdo = None
-V_pdi = None
-V_pdc = None
-E_pdo = None
-E_pdi = None
-E_pdc = None
 
-V_unit_sphere = None
-E_unit_sphere = None
- 
-V_rfts = None
-E_rfts = None
-
-min_closest_distance_spheres = []
-
+show_spheres = False
 show_thin = False
+show_voro = False
+show_rfta = False
+show_rfts = False
 
 # Setup 2D polyscope
 ps.init()
 ps.set_navigation_style("planar")
 
 generate_unit_circle()
-
-# Default configuration 
 ground_truth_polygon_from_png(png_paths[png_selected_index])
-# Create and abstract SDF function that is the only connection to the shape
 create_sdf()
 create_filtered_sdf()
 create_power_diagram()
-# spheres_statistics()
+create_marching_cubes()
 visualize()
 
 ps.set_user_callback(callback)
-
 ps.show()
