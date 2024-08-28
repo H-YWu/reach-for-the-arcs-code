@@ -134,11 +134,12 @@ def ground_truth_polygon_from_png(filepath):
     set_current_box()
 
 def create_sdf():
-    global n, sdf
+    global n, sdf, V_gt, F_gt, U_ori, S_ori
     global min_out_filter_radius, max_out_filter_radius, min_out_radius, max_out_radius
     global min_in_filter_radius, max_in_filter_radius, min_in_radius, max_in_radius
-    global U_ori, S_ori
     global cur_bbox_min, cur_bbox_max
+    global filter_out_per, min_filter_out_per, max_filter_out_per
+    global filter_in_per, min_filter_in_per, max_filter_in_per
 
     sdf = lambda x: gpy.signed_distance(x, V_gt, F_gt)[0]
     # Set up a grid
@@ -151,14 +152,20 @@ def create_sdf():
     max_out_radius = np.max(out_S)
     min_out_filter_radius = min_out_radius
     max_out_filter_radius = max_out_radius
+    min_filter_out_per = 0.0
+    max_filter_out_per = (max_out_radius - min_out_radius) / min_out_radius
+    filter_out_per = max_filter_out_per
     in_S = S_ori[S_ori<0] 
     min_in_radius = np.min(np.abs(in_S))
     max_in_radius = np.max(np.abs(in_S))
     min_in_filter_radius = min_in_radius
     max_in_filter_radius = max_in_radius
+    min_filter_in_per = 0.0
+    max_filter_in_per = (max_in_radius - min_in_radius) / min_in_radius
+    filter_in_per = max_filter_in_per
 
 def create_filtered_sdf():
-    global U_f, S_f
+    global U_f, S_f, U, S
     global min_out_filter_radius, max_out_filter_radius, min_in_filter_radius, max_in_filter_radius
 
     valid_indices = np.where(
@@ -229,7 +236,7 @@ def visualize():
     global show_rfts, V_rfts, F_rfts
 
     ps.remove_all_structures()
-    ps.register_curve_network("Ground Truth (Rotated)", V_gt, F_gt, radius=0.001, color=ORANGE)
+    ps.register_curve_network("Ground Truth (Rotated)", V_gt, F_gt, radius=0.001, color=PURPLE)
     ps.register_point_cloud(f"Grid Points", U_ori, radius=0.0017, color=YELLOW)
 
     if current_step == 0:
@@ -441,6 +448,8 @@ def callback():
     global png_files_selected, png_selected_index, n, cur_per, show_spheres, show_thin
     global V_gt, F_gt, sdf
     global min_out_filter_radius, max_out_filter_radius, min_out_radius, max_out_radius
+    global filter_out_per, min_filter_out_per, max_filter_out_per
+    global filter_in_per, min_filter_in_per, max_filter_in_per
     global min_in_filter_radius, max_in_filter_radius, min_in_radius, max_in_radius
     global num_spheres, num_tangent_pairs, num_overlap_pairs, num_in_out_tangent_pairs, num_contained_spheres
     global current_step, step_names, fine_tune_current_iter, fine_tune_iters
@@ -476,7 +485,7 @@ def callback():
         psim.TextUnformatted(f": Iter {fine_tune_current_iter}")
     
     psim.Separator()
-    num_widges = 8
+    num_widges = 10 
     changed = [False for _ in range(num_widges)]
 
     changed[0] = psim.BeginCombo("Input Shape", png_files_selected)
@@ -518,7 +527,20 @@ def callback():
     changed[7], cur_per = psim.SliderFloat("SDF Enlarged Percentage", cur_per, v_min=min_per, v_max=max_per)
     if changed[7]:
         set_current_box()
-    
+
+    psim.TextUnformatted("Exclude Spheres with Radius Greater Then the Minimum by Percentage: ")
+    psim.PushItemWidth(150)
+    changed[8], filter_out_per = psim.SliderFloat("Out", filter_out_per , v_min=min_filter_out_per, v_max=max_filter_out_per)
+    if changed[8]:
+        min_out_filter_radius = min_out_radius
+        max_out_filter_radius = min_out_radius * (1.0 + filter_out_per)
+    psim.SameLine()
+    changed[9], filter_in_per = psim.SliderFloat("In", filter_in_per , v_min=min_filter_in_per, v_max=max_filter_in_per)
+    if changed[9]:
+        min_in_filter_radius = min_in_radius
+        max_in_filter_radius = min_in_radius * (1.0 + filter_in_per)
+    psim.PopItemWidth()
+ 
     show_voro = False
     if psim.Button("Voronoi crust"):
         create_voronoi_diagram()
@@ -540,7 +562,7 @@ def callback():
         create_filtered_rfts(2)
         show_rfts = True
  
-    if changed[2] or changed[3] or changed[4] or changed[5]:
+    if changed[2] or changed[3] or changed[4] or changed[5] or changed[8] or changed[9]:
         create_filtered_sdf()
         create_power_diagram()
 
@@ -577,7 +599,7 @@ def callback():
 
 
 # Command line arguments
-parser = argparse.ArgumentParser(description='2D Test Framework.')
+parser = argparse.ArgumentParser(description='SDF 2D Test Framework.')
 parser.add_argument('file_name', type=str, nargs='?', default=None, help='The file name to process')
 args = parser.parse_args()
 

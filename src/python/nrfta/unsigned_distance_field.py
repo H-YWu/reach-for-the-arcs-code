@@ -1,4 +1,5 @@
 import platform, os, sys
+
 os_name = platform.system()
 if os_name == "Darwin":
     # Get the macOS version
@@ -17,11 +18,11 @@ elif os_name == "Windows":
 else:
     # For other systems
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../build')))
-    
-from .fine_tune_point_cloud import fine_tune_point_cloud, fine_tune_point_cloud_iteration
-from .locally_make_feasible import locally_make_feasible
-from .outside_points_from_rasterization import outside_points_from_rasterization
-from .point_cloud_to_mesh import point_cloud_to_mesh
-from .power_diagram import power_diagram
-from .sdf_to_point_cloud import sdf_to_point_cloud
-from .unsigned_distance_field import unsigned_distance_field 
+
+from rfta_bindings import _unsigned_distance_field_cpp_impl
+
+def unsigned_distance_field(U, V, E):
+    d = U.shape[1]
+    assert d==2 or d==3, "Only dimensions 2 and 3 supported."
+
+    return _unsigned_distance_field_cpp_impl(U, V, E)

@@ -1,8 +1,8 @@
+#include "power_diagram.h"
+
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/Regular_triangulation_2.h>
 #include <CGAL/draw_triangulation_2.h>
-
-#include <Eigen/Core>
 
 #include <map>
 #include <iterator>
