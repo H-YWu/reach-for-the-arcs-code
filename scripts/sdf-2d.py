@@ -151,18 +151,20 @@ def create_sdf():
     min_out_radius = np.min(out_S)
     max_out_radius = np.max(out_S)
     min_out_filter_radius = min_out_radius
-    max_out_filter_radius = max_out_radius
+    #max_out_filter_radius = max_out_radius
     min_filter_out_per = 0.0
-    max_filter_out_per = (max_out_radius - min_out_radius) / min_out_radius
-    filter_out_per = max_filter_out_per
+    max_filter_out_per = 1.0 
+    filter_out_per = 0.7 / math.sqrt(n) 
+    max_out_filter_radius = min_out_radius + filter_out_per * (max_out_radius - min_out_radius)
     in_S = S_ori[S_ori<0] 
     min_in_radius = np.min(np.abs(in_S))
     max_in_radius = np.max(np.abs(in_S))
     min_in_filter_radius = min_in_radius
-    max_in_filter_radius = max_in_radius
+    #max_in_filter_radius = max_in_radius
     min_filter_in_per = 0.0
-    max_filter_in_per = (max_in_radius - min_in_radius) / min_in_radius
-    filter_in_per = max_filter_in_per
+    max_filter_in_per = 1.0 
+    filter_in_per = 1.0 
+    max_in_filter_radius = min_in_radius + filter_in_per * (max_in_radius - min_in_radius)
 
 def create_filtered_sdf():
     global U_f, S_f, U, S
@@ -533,12 +535,12 @@ def callback():
     changed[8], filter_out_per = psim.SliderFloat("Out", filter_out_per , v_min=min_filter_out_per, v_max=max_filter_out_per)
     if changed[8]:
         min_out_filter_radius = min_out_radius
-        max_out_filter_radius = min_out_radius * (1.0 + filter_out_per)
+        max_out_filter_radius = min_out_radius + filter_out_per * (max_out_radius - min_out_radius)
     psim.SameLine()
     changed[9], filter_in_per = psim.SliderFloat("In", filter_in_per , v_min=min_filter_in_per, v_max=max_filter_in_per)
     if changed[9]:
         min_in_filter_radius = min_in_radius
-        max_in_filter_radius = min_in_radius * (1.0 + filter_in_per)
+        max_in_filter_radius = min_in_radius + filter_in_per * (max_in_radius - min_in_radius)
     psim.PopItemWidth()
  
     show_voro = False

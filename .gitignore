@@ -1,3 +1,6 @@
+data/ABC/
+data/Thingi32/
+
 .DS_Store
 imgui.ini
 polyscope.ini
@@ -46,6 +49,7 @@ results/**/*.npy
 results/**/*.eps
 results/**/*.pdf
 results/**/*.png
+results/Thingi32/
 scripts/silvias-debug-script.py
 paper/
 

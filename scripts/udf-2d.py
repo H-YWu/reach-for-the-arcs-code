@@ -114,7 +114,7 @@ def compute_power_vertex_udf():
     min_pd_radius = np.min(D_pd_f)
     max_pd_radius = np.max(D_pd_f)
     min_filter_pd_radius = min_pd_radius
-    max_filter_pd_radius = max_pd_radius
+    max_filter_pd_radius = min(max_pd_radius, min_pd_radius + 0.02 * (max_pd_radius - min_pd_radius))
 
 def visualize():
     global min_filter_radius, max_filter_radius
@@ -139,8 +139,6 @@ def visualize():
     pv_cloud.add_color_quantity("Power Vertices Color", Vpdf_colors, enabled=True)
     Epd_colors = np.array([BLACK for _ in range(np.shape(E_pd)[0])])
     for i, e in enumerate(E_pd):
-        # if np.isnan(e[0]) or np.isnan(e[1]):
-        #     continue
         if (
             (min_filter_pd_radius <= D_pd[e[0]] <= max_filter_pd_radius) and
             (min_filter_pd_radius <= D_pd[e[1]] <= max_filter_pd_radius)
@@ -173,7 +171,7 @@ def callback():
     changed[1], n = psim.SliderInt("Grid Resolution", n, v_min=5, v_max=100)
 
     psim.TextUnformatted("Exclude Spheres with Radius: ")
-    psim.PushItemWidth(150)
+    psim.PushItemWidth(100)
     changed[2], min_filter_radius = psim.SliderFloat("below (sphere)", min_filter_radius, v_min=min_radius, v_max=max_radius) 
     psim.SameLine()
     changed[3], max_filter_radius = psim.SliderFloat("above (sphere)", max_filter_radius, v_min=min_filter_radius, v_max=max_radius)
@@ -190,7 +188,7 @@ def callback():
         max_filter_radius = min_radius * (1.0 + filter_per)
     
     psim.TextUnformatted("Exclude Power Vertices with Radius: ")
-    psim.PushItemWidth(150)
+    psim.PushItemWidth(100)
     changed[6], min_filter_pd_radius = psim.SliderFloat("below (vertex)", min_filter_pd_radius, v_min=min_pd_radius, v_max=max_pd_radius) 
     psim.SameLine()
     changed[7], max_filter_pd_radius = psim.SliderFloat("above (vertex)", max_filter_pd_radius, v_min=min_filter_pd_radius, v_max=max_pd_radius)
